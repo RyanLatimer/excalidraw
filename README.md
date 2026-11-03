@@ -1,3 +1,5 @@
+> **Ryan's self-hosted fork:** Adds a private, synced multi-document workspace for `draw.ryanlatimer.dev`. See [setup, features, and operations](selfhost/README.md). The original upstream app and editor are retained below.
+
 <a href="https://excalidraw.com/" target="_blank" rel="noopener">
   <picture>
     <source media="(prefers-color-scheme: dark)" alt="Excalidraw" srcset="https://excalidraw.nyc3.cdn.digitaloceanspaces.com/github/excalidraw_github_cover_2_dark.png" />

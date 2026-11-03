@@ -50,6 +50,12 @@
   "homepage": ".",
   "prettier": "@excalidraw/prettier-config",
   "scripts": {
+    "selfhost:build": "vite build --config selfhost/vite.config.mts",
+    "selfhost:dev": "vite --config selfhost/vite.config.mts",
+    "selfhost:start": "node selfhost/server.mjs",
+    "selfhost:typecheck": "tsc -p selfhost/tsconfig.json",
+    "selfhost:test": "node --test selfhost/server.test.mjs && vitest run --config selfhost/vitest.config.mts",
+    "selfhost:test:browser": "node selfhost/browser.test.mjs",
     "build-node": "node ./scripts/build-node.js",
     "build:app:docker": "yarn --cwd ./excalidraw-app build:app:docker",
     "build:app": "yarn --cwd ./excalidraw-app build:app",
