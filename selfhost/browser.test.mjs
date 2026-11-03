@@ -4,12 +4,26 @@ import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { ScryptHasher } from "@openauthjs/openauth/provider/password";
+import { Storage } from "@openauthjs/openauth/storage/storage";
+import { authDatabase } from "./auth-storage.mjs";
+import { createPasswordAuth } from "./auth.mjs";
 
 const dir = mkdtempSync(path.join(tmpdir(), "draw-browser-"));
 const origin = "http://127.0.0.1:3102";
+const ownerEmail = "owner@example.com";
+const password = "browser-test-password-only";
+const databasePath = path.join(dir, "test.sqlite");
+const authStore = authDatabase(databasePath);
+await Storage.set(
+  authStore.storage,
+  ["email", ownerEmail, "password"],
+  await ScryptHasher().hash(password),
+);
+authStore.db.close();
 const server = createWorkspaceServer({
-  databasePath: path.join(dir, "test.sqlite"),
-  authenticate: async () => ({ email: "owner@test" }),
+  databasePath,
+  authentication: createPasswordAuth({ databasePath, origin, ownerEmail }),
   origin,
 });
 await new Promise((resolve) => server.listen(3102, "127.0.0.1", resolve));
@@ -43,6 +57,8 @@ const wait = async (condition, description) => {
 };
 try {
   await page.goto(origin);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page
     .getByRole("button", { name: "New collection", exact: true })
     .click();
@@ -85,6 +101,8 @@ try {
   const second = await browser.newContext();
   const other = await second.newPage();
   await other.goto(`${origin}/drawing/${id}`);
+  await other.getByLabel("Password", { exact: true }).fill(password);
+  await other.getByRole("button", { name: "Sign in", exact: true }).click();
   await other.locator(".excalidraw").waitFor();
   await other
     .getByRole("textbox", { name: "Drawing name" })
@@ -232,6 +250,14 @@ try {
     fullPage: true,
     animations: "disabled",
   });
+  await page
+    .getByRole("button", { name: "Open navigation", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "You’re signed out", exact: true })
+    .waitFor();
+  assert.equal((await context.request.get(`${origin}/api/me`)).status(), 401);
   await second.close();
   assert.deepEqual(errors, [], "no browser exceptions");
   console.log(

@@ -51,77 +51,15 @@ if (zones.length !== 1)
 const zone = zones[0];
 const accountId = zone.account.id;
 const account = `/accounts/${accountId}`;
-// Check access and DNS reads before creating resources.
-const [records, apps, providers, tunnels] = await Promise.all([
+// Tunnel and DNS only: OpenAuth runs in the application.
+const [records, tunnels] = await Promise.all([
   cf(`/zones/${zone.id}/dns_records?name=${hostname}`),
-  cf(`${account}/access/apps`),
-  cf(`${account}/access/identity_providers`),
   cf(`${account}/cfd_tunnel?is_deleted=false`),
 ]);
-let organization = await cf(
-  `${account}/access/organizations`,
-  "GET",
-  undefined,
-  true,
-);
 if (records.length && !state.tunnelId)
   throw new Error(
     "draw.ryanlatimer.dev already has a DNS record; inspect it before continuing.",
   );
-if (!organization)
-  organization = await cf(`${account}/access/organizations`, "POST", {
-    name: "Ryan's workspace",
-    auth_domain: "ryanlatimer-draw.cloudflareaccess.com",
-  });
-let otp = providers.find((provider) => provider.type === "onetimepin");
-if (!otp)
-  otp = await cf(`${account}/access/identity_providers`, "POST", {
-    name: "Email one-time PIN",
-    type: "onetimepin",
-    config: {},
-  });
-let app = apps.find((app) => app.id === state.accessAppId);
-if (!app) {
-  if (apps.some((app) => app.domain === hostname))
-    throw new Error(
-      "An existing Access app owns this hostname. Inspect it before continuing.",
-    );
-  app = await cf(`${account}/access/apps`, "POST", {
-    name: "Ryan's Excalidraw",
-    domain: hostname,
-    type: "self_hosted",
-    session_duration: "168h",
-    allowed_idps: [otp.id],
-    auto_redirect_to_identity: true,
-    app_launcher_visible: true,
-    http_only_cookie_attribute: true,
-  });
-  state.accessAppId = app.id;
-  persist();
-}
-let policy = (await cf(`${account}/access/apps/${app.id}/policies`)).find(
-  (policy) => policy.id === state.policyId,
-);
-const policyBody = {
-  name: "Ryan only",
-  decision: "allow",
-  include: [{ email: { email } }],
-  precedence: 1,
-};
-if (!policy)
-  policy = await cf(
-    `${account}/access/apps/${app.id}/policies`,
-    "POST",
-    policyBody,
-  );
-else
-  policy = await cf(
-    `${account}/access/apps/${app.id}/policies/${policy.id}`,
-    "PUT",
-    policyBody,
-  );
-state.policyId = policy.id;
-persist();
 let tunnel = tunnels.find((tunnel) => tunnel.id === state.tunnelId);
 if (!tunnel) {
   if (tunnels.some((tunnel) => tunnel.name === "draw-ryanlatimer"))
@@ -158,9 +96,8 @@ privateFile(
     "NODE_ENV=production",
     "PORT=3100",
     `DRAW_ORIGIN=https://${hostname}`,
-    `DRAW_ACCESS_TEAM_DOMAIN=${organization.auth_domain}`,
-    `DRAW_ACCESS_AUD=${app.aud}`,
-    `DRAW_ALLOWED_EMAILS=${email.toLowerCase()}`,
+    "DRAW_AUTH=openauth",
+    `DRAW_OWNER_EMAIL=${email.toLowerCase()}`,
     `DRAW_DATABASE=${path.join(
       os.homedir(),
       ".local/share/excalidraw/workspace.sqlite",
@@ -172,10 +109,9 @@ state.accountId = accountId;
 state.zoneId = zone.id;
 state.hostname = hostname;
 state.ownerEmail = email;
-state.teamDomain = organization.auth_domain;
-state.audience = app.aud;
+state.authentication = "openauth";
 persist();
-// Only expose DNS after access policy and origin validation are configured.
+// The app requires an owner password and valid sessions before serving private content.
 if (!records.length) {
   const record = await cf(`/zones/${zone.id}/dns_records`, "POST", {
     type: "CNAME",

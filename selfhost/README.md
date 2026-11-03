@@ -10,7 +10,7 @@ This fork adds a self-hosted multi-document workspace to the upstream Excalidraw
 - Collapsible in-editor scene navigator with collection filters, search (`Ctrl/Cmd+P`), and direct drawing switching that flushes saves before navigation.
 - SQLite storage for drawings and embedded image files. Automatically saves to the server across devices; a clean open editor checks for remote updates every ten seconds.
 - IndexedDB drafts while offline. Saves run sequentially; stale revisions are rejected rather than overwriting another tab/device. Conflicting drafts can become a recovered copy.
-- Cloudflare Access email sign-in with an owner allowlist. The origin independently verifies JWT signature, issuer, audience, expiration, and owner email. It binds to loopback and rejects cross-origin writes.
+- OpenAuth email/password sign-in for one preconfigured owner. Registration and email reset are disabled. Passwords use OpenAuth’s salted scrypt hashing; OAuth code exchange uses PKCE and state validation. Secure, HttpOnly session cookies contain an opaque identifier; tokens and signing keys stay in SQLite. Sessions last seven days, survive restarts, and refresh short-lived access tokens. The origin binds to loopback and rejects cross-origin writes.
 - Last 20 scene revisions retained in SQLite; daily consistent database backups retain 14 copies. Local backups are on this machine, not off-site.
 - Light/dark themes and mobile navigation.
 
@@ -46,31 +46,40 @@ Open `http://127.0.0.1:3101`. Development authentication is loopback-only and fo
 Provisioning needs a Cloudflare API token for the account/zone containing `ryanlatimer.dev`:
 
 - Zone: **DNS Edit**, **Zone Read**, scoped to `ryanlatimer.dev`.
-- Account: **Cloudflare Tunnel Edit**, **Access: Apps and Policies Edit**, **Access: Organizations, Identity Providers, and Groups Edit**.
+- Account: **Cloudflare Tunnel Edit**. Cloudflare Access is not used. Migrating an existing Access deployment additionally needs **Access: Apps and Policies Edit** to delete only its old Access app.
 
 Use a private credential file, outside the checkout. Its contents are never printed or put in Git. Set the owner email explicitly:
 
 ```sh
 DRAW_CF_TOKEN_FILE=/private/path/to/token DRAW_OWNER_EMAIL=you@example.com node selfhost/provision-cloudflare.mjs
+DRAW_DATABASE="$HOME/.local/share/excalidraw/workspace.sqlite" DRAW_OWNER_EMAIL=you@example.com DRAW_PASSWORD_FILE=/private/path/to/password node selfhost/set-owner-password.mjs
 node selfhost/install-services.mjs
 systemctl --user daemon-reload
 systemctl --user enable --now excalidraw.service excalidraw-tunnel.service excalidraw-backup.timer
 ```
 
-The provisioner discovers the correct zone and account, sets up email PIN sign-in, an owner-only Access policy, a remote tunnel, and a proxied CNAME. It saves resource IDs for retries. Existing unrelated DNS records, tunnel names, or Access apps cause it to stop for inspection. If Cloudflare Zero Trust is not yet enabled, the account may need its initial free-plan onboarding in the dashboard before its organization API is available.
+The provisioner configures only the tunnel and proxied CNAME, saving resource IDs for retries. OpenAuth runs inside the app on the same hostname; it needs no separate service or mail provider. Seed a password before starting: the app refuses to start without the configured owner's hash. Keep the private password file outside Git, and remove it after setup.
+
+To migrate this fork's original Cloudflare Access deployment, build and test first, seed the owner's password, replace the old Access environment settings with `DRAW_AUTH=openauth` and `DRAW_OWNER_EMAIL=you@example.com`, and restart the app. Then run:
+
+```sh
+DRAW_CF_TOKEN_FILE=/private/path/to/token node selfhost/remove-cloudflare-access.mjs
+```
+
+That migration checks that OpenAuth is running and unauthenticated API requests are rejected before it deletes the specific Access app previously created for this workspace. It leaves the tunnel and shared Cloudflare organization/identity providers in place.
 
 Files created outside Git:
 
 | Path | Purpose |
 | --- | --- |
-| `~/.config/excalidraw/workspace.env` | Production origin and Access verification settings |
+| `~/.config/excalidraw/workspace.env` | Production origin and OpenAuth owner settings |
 | `~/.config/excalidraw/tunnel.token` | Private connector token, mode 0600 |
 | `~/.config/excalidraw/deployment.json` | Cloudflare resource IDs for retries |
-| `~/.local/share/excalidraw/workspace.sqlite` | Production drawings, revisions and images |
+| `~/.local/share/excalidraw/workspace.sqlite` | Drawings, images, OpenAuth password hash, keys and sessions |
 | `~/.local/share/excalidraw/backups/` | Daily SQLite snapshots |
 | `~/.config/systemd/user/excalidraw*.service` | App, tunnel and backup services |
 
-All origins are private; the Access app must be configured before the service starts. A raw email header cannot authenticate a request. `/healthz` is the only unauthenticated endpoint and contains no data. Do not add Cloudflare cache rules that bypass authentication for this hostname.
+The workspace requires an OpenAuth session at the origin. Cloudflare Access headers are ignored. Login/OAuth endpoints and `/healthz` are public; all drawings, images and app assets require a valid owner session. Authentication state is included in the existing database backups. Do not add Cloudflare cache rules that cache private responses for this hostname.
 
 The host must be running and online for the tunnel and cross-device saves to work. User services start after reboot if lingering is enabled (`loginctl show-user "$USER" -p Linger`; already enabled on Ryan's machine).
 
@@ -82,7 +91,9 @@ journalctl --user -u excalidraw -u excalidraw-tunnel --since today
 systemctl --user start excalidraw-backup.service
 ```
 
-An unauthenticated visit to the production URL should redirect to Cloudflare Access. Direct unauthenticated requests to port 3100 should return 401 for the UI/API; `/healthz` returns 200. After signing in, create a drawing, reopen it from another device, and verify the same scene appears.
+An unauthenticated visit redirects to the same-host OpenAuth email/password form. Direct unauthenticated API requests to port 3100 return 401; the UI redirects to sign-in, and `/healthz` returns 200. After signing in, create a drawing, reopen it from another device, and verify the same scene appears.
+
+To change/reset the password, run `selfhost/set-owner-password.mjs` with `DRAW_DATABASE`, `DRAW_OWNER_EMAIL`, and `DRAW_PASSWORD_FILE`. The file must contain the exact password (12–1024 characters). The command stores a new salted hash and revokes current sessions; it never prints the password. Public registration and email-based password reset routes remain disabled.
 
 To update code, build and run tests before `systemctl --user restart excalidraw.service`. Keep the previous source commit available for rollback. Production data is independent of Git checkouts.
 

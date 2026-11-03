@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { generateKeyPairSync, sign } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createWorkspaceServer } from "./server.mjs";
-import { accessVerifier } from "./auth.mjs";
 
 test("private workspace API: auth, persistence, revision conflicts, images, collections, trash, and CSRF", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "draw-test-"));
@@ -172,56 +170,4 @@ test("private workspace API: auth, persistence, revision conflicts, images, coll
     await new Promise((resolve) => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("Access JWT verifies signature, issuer, audience, expiration and owner allowlist", async () => {
-  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-  });
-  const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-key" };
-  const authenticate = accessVerifier({
-    teamDomain: "draw-test.cloudflareaccess.com",
-    audience: "draw-aud",
-    allowedEmails: ["owner@test"],
-    fetchKeys: async () => ({ ok: true, json: async () => ({ keys: [jwk] }) }),
-  });
-  const base = {
-    email: "owner@test",
-    aud: ["draw-aud"],
-    iss: "https://draw-test.cloudflareaccess.com",
-    exp: Date.now() / 1000 + 600,
-  };
-  const jwt = (claims, key = privateKey) => {
-    const content = `${Buffer.from(
-      JSON.stringify({ alg: "RS256", kid: "test-key" }),
-    ).toString("base64url")}.${Buffer.from(JSON.stringify(claims)).toString(
-      "base64url",
-    )}`;
-    return `${content}.${sign("RSA-SHA256", Buffer.from(content), key).toString(
-      "base64url",
-    )}`;
-  };
-  const check = (claims) =>
-    authenticate({ headers: { "cf-access-jwt-assertion": jwt(claims) } });
-  assert.deepEqual(await check(base), { email: "owner@test" });
-  assert.equal(await check({ ...base, exp: 1 }), null);
-  assert.equal(await check({ ...base, email: "attacker@test" }), null);
-  assert.equal(
-    await check({ ...base, iss: "https://wrong.cloudflareaccess.com" }),
-    null,
-  );
-  assert.equal(await check({ ...base, aud: ["other-app"] }), null);
-  assert.equal(
-    await authenticate({
-      headers: { "cf-access-authenticated-user-email": "owner@test" },
-    }),
-    null,
-  );
-  const other = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  assert.equal(
-    await authenticate({
-      headers: { "cf-access-jwt-assertion": jwt(base, other.privateKey) },
-    }),
-    null,
-  );
 });

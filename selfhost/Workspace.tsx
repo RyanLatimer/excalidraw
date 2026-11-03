@@ -366,14 +366,15 @@ export function Workspace() {
               >
                 <Icon name={theme === "light" ? "moon" : "sun"} />
               </button>
-              <a
-                className="icon-button"
-                href="/cdn-cgi/access/logout"
-                aria-label="Sign out"
-                title="Sign out"
-              >
-                <Icon name="logout" />
-              </a>
+              <form action="/auth/logout" method="post">
+                <button
+                  className="icon-button"
+                  aria-label="Sign out"
+                  title="Sign out"
+                >
+                  <Icon name="logout" />
+                </button>
+              </form>
             </div>
           </aside>
           <main className="dashboard-main">

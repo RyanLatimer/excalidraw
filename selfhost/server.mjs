@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { createReadStream, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { accessVerifier } from "./auth.mjs";
+import { createPasswordAuth } from "./auth.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fail = (status, message) => {
@@ -61,6 +61,7 @@ export function createWorkspaceServer({
   databasePath,
   distPath = path.join(here, "dist"),
   authenticate,
+  authentication,
   origin = "https://draw.ryanlatimer.dev",
 }) {
   mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o700 });
@@ -96,17 +97,38 @@ export function createWorkspaceServer({
     response.setHeader("X-Frame-Options", "DENY");
     response.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-src https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-src https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
     );
     try {
       const url = new URL(request.url, origin);
+      if (url.origin !== origin) fail(400, "Invalid request origin.");
       if (url.pathname === "/healthz" && request.method === "GET")
         return json(200, { ok: true });
-      const identity = await authenticate(request);
-      if (!identity)
+      if (
+        authentication &&
+        (await authentication.handle(request, response, url))
+      )
+        return;
+      const identity = await (authentication?.authenticate || authenticate)(
+        request,
+      );
+      if (!identity) {
+        if (
+          authentication &&
+          request.method === "GET" &&
+          !url.pathname.startsWith("/api/")
+        ) {
+          response.writeHead(302, {
+            Location: `/auth/login?returnTo=${encodeURIComponent(
+              url.pathname,
+            )}`,
+          });
+          return response.end();
+        }
         return json(401, {
-          error: "Sign in through Cloudflare Access to open your workspace.",
+          error: "Sign in to open your workspace.",
         });
+      }
       if (
         !["GET", "HEAD"].includes(request.method) &&
         request.headers.origin !== origin
@@ -328,7 +350,10 @@ export function createWorkspaceServer({
     }
   });
   server.requestTimeout = 60000;
-  server.on("close", () => db.close());
+  server.on("close", () => {
+    db.close();
+    authentication?.close();
+  });
   return server;
 }
 
@@ -339,23 +364,27 @@ if (
   const dev = process.env.DRAW_DEV_AUTH === "1";
   if (dev && process.env.NODE_ENV === "production")
     throw new Error("Development auth cannot run in production.");
-  const authenticate = dev
-    ? async () => ({ email: "local@localhost" })
-    : accessVerifier({
-        teamDomain: process.env.DRAW_ACCESS_TEAM_DOMAIN,
-        audience: process.env.DRAW_ACCESS_AUD,
-        allowedEmails: (process.env.DRAW_ALLOWED_EMAILS || "")
-          .toLowerCase()
-          .split(",")
-          .filter(Boolean),
+  const databasePath =
+    process.env.DRAW_DATABASE || path.join(here, "data/workspace.sqlite");
+  const origin =
+    process.env.DRAW_ORIGIN ||
+    (dev ? "http://127.0.0.1:3101" : "https://draw.ryanlatimer.dev");
+  if (!dev && process.env.DRAW_AUTH !== "openauth")
+    throw new Error(
+      "Configure DRAW_AUTH=openauth and seed the owner's password before starting.",
+    );
+  const authentication = dev
+    ? undefined
+    : createPasswordAuth({
+        databasePath,
+        origin,
+        ownerEmail: process.env.DRAW_OWNER_EMAIL,
       });
   createWorkspaceServer({
-    databasePath:
-      process.env.DRAW_DATABASE || path.join(here, "data/workspace.sqlite"),
-    authenticate,
-    origin:
-      process.env.DRAW_ORIGIN ||
-      (dev ? "http://127.0.0.1:3101" : "https://draw.ryanlatimer.dev"),
+    databasePath,
+    authentication,
+    authenticate: dev ? async () => ({ email: "local@localhost" }) : undefined,
+    origin,
   }).listen(Number(process.env.PORT || 3100), "127.0.0.1", () =>
     console.log(`Workspace listening on 127.0.0.1:${process.env.PORT || 3100}`),
   );
