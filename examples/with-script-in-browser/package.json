@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "typescript": "^5",
-    "vite": "5.0.12"
+    "vite": "5.1.8"
   },
   "scripts": {
     "start": "vite",
